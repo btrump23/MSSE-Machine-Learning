@@ -1,0 +1,71 @@
+﻿<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Prediction Results</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2rem;
+        }
+
+        .card {
+            max-width: 900px;
+            padding: 1.25rem;
+            border: 1px solid #ddd;
+            border-radius: 12px;
+        }
+
+        pre {
+            background: #f6f6f6;
+            padding: 1rem;
+            border-radius: 8px;
+            overflow: auto;
+        }
+
+        .muted {
+            color: #555;
+        }
+
+        a.button {
+            display: inline-block;
+            padding: 0.6rem 1rem;
+            border: 1px solid #333;
+            border-radius: 10px;
+            text-decoration: none;
+            color: #111;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Done</h2>
+        <p class="muted">File: <b>{{ filename }}</b> | Rows: <b>{{ rows }}</b></p>
+
+        <p>
+            Your browser should prompt you to download the response from <code>/predict-csv</code>.
+            If not, re-run and ensure downloads are allowed.
+        </p>
+
+        {% if metrics %}
+        <h3>Metrics (Label present)</h3>
+        <ul>
+            <li>accuracy: {{ "%.4f"|format(metrics.accuracy) }}</li>
+            <li>precision: {{ "%.4f"|format(metrics.precision) }}</li>
+            <li>recall: {{ "%.4f"|format(metrics.recall) }}</li>
+            <li>f1: {{ "%.4f"|format(metrics.f1) }}</li>
+        </ul>
+
+        <h4>Confusion Matrix (rows=true, cols=pred)</h4>
+        <pre>{{ metrics.confusion_matrix }}</pre>
+
+        <h4>Classification Report</h4>
+        <pre>{{ metrics.classification_report }}</pre>
+        {% else %}
+        <p class="muted">No Label column found → metrics not computed.</p>
+        {% endif %}
+
+        <p><a class="button" href="/">Back</a></p>
+    </div>
+</body>
+</html>

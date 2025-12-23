@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Big datasets
 data/raw/
 data/processed/
@@ -42,6 +43,37 @@ catboost_info/
 
 # Archives
 *.zip
+=======
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Visual Studio / IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Model artifacts / binaries
+*.pkl
+*.joblib
+artifacts/
+
+# ML tool outputs
+catboost_info/
+
+# Generated results
+*predictions*.csv
+*results*.csv
+
+# Archives
+*.zip
+>>>>>>> 14f855b (Add training pipeline, Flask prediction service, and UI)
 
 # OS junk
 Thumbs.db

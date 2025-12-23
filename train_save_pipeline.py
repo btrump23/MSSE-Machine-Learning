@@ -1,97 +1,164 @@
-﻿# train_save_pipeline.py
+﻿"""
+train_save_pipeline.py
+
+Trains a scikit-learn pipeline on data/train.csv and saves it as a bundle dict:
+  - "pipeline": trained pipeline
+  - "feature_names": list of feature column names used for training
+  - "dropped_all_missing": list of columns dropped because they were all missing
+  - "target_col": name of target column
+
+✅ Saves model.pkl to the SAME folder as this script (guaranteed).
+"""
+
 import os
+import sys
 import joblib
 import pandas as pd
 
-from sklearn.model_selection import StratifiedKFold, cross_validate
 from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report
 
-from lightgbm import LGBMClassifier
 
-TRAIN_PATH = "data/processed/train.csv"
-ARTIFACT_DIR = "artifacts"
-MODEL_PATH = os.path.join(ARTIFACT_DIR, "lgbm_pipeline.joblib")
+# =====================================================
+# DEBUG: PROVE SCRIPT IS RUNNING
+# =====================================================
+print("🔥 train_save_pipeline.py STARTED")
+print("🔥 Python executable:", sys.executable)
 
+
+# =====================================================
+# CONFIG — EDIT ONLY TARGET_COL IF NEEDED
+# =====================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Your dataset location (as you said: data/train.csv)
+TRAIN_CSV = os.path.join(BASE_DIR, "data", "processed", "train.csv")
+
+# Your label/target column name (change this if your CSV uses a different name)
 TARGET_COL = "Label"
-DROP_ALL_MISSING = ["FormatedTimeDateStamp", "ImportedDlls", "ImportedSymbols", "SHA1"]
 
-def load_train():
-    df = pd.read_csv(TRAIN_PATH)
-    if TARGET_COL not in df.columns:
-        raise ValueError(f"Expected target column '{TARGET_COL}' not found in {TRAIN_PATH}")
+# Model output path (saved right next to this script)
+MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
 
-    # Drop all-missing columns (known from your earlier checks)
-    cols_to_drop = [c for c in DROP_ALL_MISSING if c in df.columns]
-    if cols_to_drop:
-        print(f"Dropping all-missing columns: {cols_to_drop}")
-        df = df.drop(columns=cols_to_drop)
+DROP_ALL_MISSING = True
+TEST_SIZE = 0.2
+RANDOM_STATE = 42
 
-    # Drop obvious non-feature columns if present (safe)
-    for c in ["MD5", "Identify"]:
-        if c in df.columns:
-            df = df.drop(columns=[c])
 
-    y = df[TARGET_COL].astype(int)
-    X = df.drop(columns=[TARGET_COL])
+# =====================================================
+# HELPERS
+# =====================================================
+def drop_all_missing_columns(df: pd.DataFrame):
+    all_missing = [c for c in df.columns if df[c].isna().all()]
+    if all_missing:
+        df = df.drop(columns=all_missing)
+    return df, all_missing
 
-    # Ensure numeric only (your dataset appears numeric)
-    X = X.apply(pd.to_numeric, errors="coerce")
 
-    print(f"Train rows: {len(df)} | Features used: {X.shape[1]}")
-    return X, y, list(X.columns)
+def build_pipeline(X: pd.DataFrame) -> Pipeline:
+    numeric_cols = X.select_dtypes(include=["number"]).columns.tolist()
+    categorical_cols = [c for c in X.columns if c not in numeric_cols]
 
-def build_pipeline():
-    # NOTE: scaling is not needed for tree models; keeping it simple + robust:
-    # just impute + model.
-    imputer = SimpleImputer(strategy="median")
+    num_pipe = Pipeline(steps=[("imputer", SimpleImputer(strategy="median"))])
 
-    model = LGBMClassifier(
-        n_estimators=500,
-        learning_rate=0.05,
-        num_leaves=31,
-        subsample=0.9,
-        colsample_bytree=0.9,
-        random_state=42,
-        n_jobs=-1
+    cat_pipe = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+        ]
     )
 
-    pipe = Pipeline([
-        ("imputer", imputer),
-        ("model", model)
-    ])
-    return pipe
+    pre = ColumnTransformer(
+        transformers=[
+            ("num", num_pipe, numeric_cols),
+            ("cat", cat_pipe, categorical_cols),
+        ],
+        remainder="drop",
+    )
 
+    model = LogisticRegression(max_iter=1000)
+
+    return Pipeline(steps=[("preprocess", pre), ("model", model)])
+
+
+# =====================================================
+# MAIN
+# =====================================================
 def main():
-    X, y, feature_names = load_train()
-    pipe = build_pipeline()
+    print("🔥 ENTERED main()")
+    print("📄 Training CSV:", TRAIN_CSV)
+    print("🎯 Target column:", TARGET_COL)
+    print("💾 Model output path:", MODEL_PATH)
 
-    # Optional: quick CV sanity check (train only, no leakage)
-    cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
-    scoring = {"accuracy": "accuracy", "precision": "precision", "recall": "recall", "f1": "f1"}
+    if not os.path.exists(TRAIN_CSV):
+        raise FileNotFoundError(f"Training CSV not found: {TRAIN_CSV}")
 
-    print("\nRunning 10-fold CV (train only)...")
-    cv_results = cross_validate(pipe, X, y, cv=cv, scoring=scoring, n_jobs=-1)
-    for k in scoring.keys():
-        print(f"{k:>9}: mean={cv_results['test_'+k].mean():.4f} std={cv_results['test_'+k].std():.4f}")
+    df = pd.read_csv(TRAIN_CSV)
+    df.columns = [str(c).strip() for c in df.columns]
 
-    # Fit final model on ALL training data (still no hold-out touched)
-    print("\nTraining final model on full training set...")
-    pipe.fit(X, y)
+    print("📊 Columns found:", df.columns.tolist())
 
-    os.makedirs(ARTIFACT_DIR, exist_ok=True)
+    if TARGET_COL not in df.columns:
+        raise ValueError(
+            f"Target column '{TARGET_COL}' not found in CSV. "
+            f"Found: {df.columns.tolist()}"
+        )
 
-    # Save pipeline + metadata together
+    dropped_cols = []
+    if DROP_ALL_MISSING:
+        df, dropped_cols = drop_all_missing_columns(df)
+        print("🧹 Dropped all-missing columns:", dropped_cols)
+
+        if TARGET_COL not in df.columns:
+            raise ValueError("Target column disappeared after dropping all-missing columns.")
+
+    X = df.drop(columns=[TARGET_COL])
+    y = df[TARGET_COL]
+
+    feature_names = list(X.columns)
+    print("🧠 Feature count:", len(feature_names))
+    # Uncomment if you want full feature list printed:
+    # print("🧠 Features:", feature_names)
+
+    pipeline = build_pipeline(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=y if y.nunique() > 1 else None,
+    )
+
+    pipeline.fit(X_train, y_train)
+
+    # Optional evaluation
+    try:
+        preds = pipeline.predict(X_test)
+        acc = accuracy_score(y_test, preds)
+        print(f"📈 Accuracy: {acc:.4f}")
+        print(classification_report(y_test, preds))
+    except Exception as e:
+        print("ℹ️ Skipped evaluation:", e)
+
+    # Save pipeline + metadata together (matches your bundle structure)
     bundle = {
-        "pipeline": pipe,
+        "pipeline": pipeline,
         "feature_names": feature_names,
-        "dropped_all_missing": DROP_ALL_MISSING,
-        "target_col": TARGET_COL
+        "dropped_all_missing": dropped_cols,  # list of dropped columns
+        "target_col": TARGET_COL,
     }
 
+    print("🔥 ABOUT TO SAVE MODEL TO:", MODEL_PATH)
     joblib.dump(bundle, MODEL_PATH)
+    print("🔥 MODEL SAVED")
     print(f"\n✅ Saved packaged pipeline to: {MODEL_PATH}")
+
 
 if __name__ == "__main__":
     main()
-

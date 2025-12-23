@@ -1,156 +1,156 @@
-# app.py
-from __future__ import annotations
-
+﻿import os
 import io
-from pathlib import Path
-from typing import Tuple, Optional
-
 import joblib
 import pandas as pd
-from flask import Flask, render_template, request, send_file, jsonify
 
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    confusion_matrix,
-    classification_report,
-)
+from flask import Flask, request, jsonify, send_file, render_template_string
 
-APP_DIR = Path(__file__).resolve().parent
-ARTIFACTS_DIR = APP_DIR / "artifacts"
-MODEL_PATH = ARTIFACTS_DIR / "lgbm_pipeline.joblib"
-
-# Columns you should never feed into the model as features
-DROP_ALWAYS = {"Label", "Identify", "MD5", "SHA1"}  # keep safe + consistent with your pipeline
-# If these exist and are non-numeric, we coerce them; your dataset sometimes includes Name strings
-COERCE_NUMERIC_IF_PRESENT = {"Name", "ImportedDlls", "ImportedSymbols", "FormatedTimeDateStamp"}
-
-
-def load_pipeline():
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model not found at: {MODEL_PATH}")
-    return joblib.load(MODEL_PATH)
-
-
-def prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
-    """
-    Prepares X for the model. If Label exists, returns y too.
-    - Drops non-feature columns (Label/Identify/MD5/SHA1) if present
-    - Coerces any non-numeric columns to numeric (errors->NaN)
-    """
-    y = None
-    if "Label" in df.columns:
-        y = pd.to_numeric(df["Label"], errors="coerce")
-
-    X = df.copy()
-
-    # Drop always-drop columns if present
-    for col in list(DROP_ALWAYS):
-        if col in X.columns:
-            X = X.drop(columns=[col])
-
-    # Coerce any object columns (or known columns) to numeric
-    non_numeric_cols = [c for c in X.columns if X[c].dtype == "object"]
-    to_coerce = sorted(set(non_numeric_cols).union(COERCE_NUMERIC_IF_PRESENT).intersection(set(X.columns)))
-    if to_coerce:
-        for c in to_coerce:
-            X[c] = pd.to_numeric(X[c], errors="coerce")
-
-    return X, y
-
-
-def compute_metrics(y_true: pd.Series, y_pred: pd.Series) -> dict:
-    y_true = y_true.dropna().astype(int)
-    y_pred = pd.Series(y_pred).iloc[y_true.index].astype(int)
-
-    metrics = {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
-        "classification_report": classification_report(y_true, y_pred, digits=4),
-    }
-    return metrics
-
-
+# =====================================================
+# APP SETUP
+# =====================================================
 app = Flask(__name__)
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
 
-@app.get("/health")
+MODEL = None
+MODEL_BUNDLE = None
+LOAD_ERROR = None
+
+
+# =====================================================
+# LOAD MODEL
+# =====================================================
+def load_model(path):
+    obj = joblib.load(path)
+
+    if isinstance(obj, dict):
+        if "pipeline" in obj:
+            return obj["pipeline"], obj
+        if "model" in obj:
+            return obj["model"], obj
+        raise ValueError(f"Model bundle keys not recognised: {list(obj.keys())}")
+
+    return obj, None
+
+
+try:
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError(f"Model file not found at: {MODEL_PATH}")
+
+    MODEL, MODEL_BUNDLE = load_model(MODEL_PATH)
+except Exception as e:
+    LOAD_ERROR = str(e)
+    MODEL = None
+    MODEL_BUNDLE = None
+
+
+# =====================================================
+# GUI PAGE (UPLOAD CSV)
+# =====================================================
+UPLOAD_PAGE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Malware Detector - CSV Prediction</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; }
+    .card { max-width: 760px; padding: 24px; border: 1px solid #ddd; border-radius: 10px; }
+    button { padding: 10px 16px; font-size: 16px; cursor: pointer; }
+    input[type=file] { margin: 12px 0; }
+    .hint { color: #555; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Malware Detector — CSV Prediction</h2>
+    <p class="hint">
+      Upload a CSV with the same feature columns as training.
+      If a <b>Label</b> column exists, it will be ignored.
+    </p>
+    <form action="/predict-csv" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept=".csv" required />
+      <br/>
+      <button type="submit">Predict</button>
+    </form>
+  </div>
+</body>
+</html>
+"""
+
+
+# =====================================================
+# ROUTES
+# =====================================================
+@app.route("/", methods=["GET"])
 def health():
-    return jsonify(status="ok")
+    return jsonify({
+        "status": "ok",
+        "message": "Flask ML service running",
+        "model_loaded": MODEL is not None,
+        "model_path": MODEL_PATH,
+        "error": LOAD_ERROR
+    })
 
 
-@app.get("/")
-def index():
-    return render_template("index.html", model_path=str(MODEL_PATH))
+@app.route("/ui", methods=["GET"])
+def ui():
+    return render_template_string(UPLOAD_PAGE)
 
 
-@app.post("/predict-csv")
+@app.route("/predict-csv", methods=["POST"])
 def predict_csv():
-    if "file" not in request.files:
-        return render_template("index.html", error="No file part in request", model_path=str(MODEL_PATH)), 400
+    if MODEL is None:
+        return jsonify({"error": "Model not loaded", "details": LOAD_ERROR}), 500
 
-    f = request.files["file"]
-    if not f or f.filename.strip() == "":
-        return render_template("index.html", error="No file selected", model_path=str(MODEL_PATH)), 400
+    if "file" not in request.files:
+        return jsonify({"error": "No file part in request"}), 400
+
+    file = request.files["file"]
+
+    if file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
 
     try:
-        df = pd.read_csv(f)
+        df = pd.read_csv(file)
     except Exception as e:
-        return render_template("index.html", error=f"Could not read CSV: {e}", model_path=str(MODEL_PATH)), 400
+        return jsonify({"error": f"Failed to read CSV: {e}"}), 400
 
-    pipe = load_pipeline()
-    X, y = prepare_features(df)
+    # Drop target column if present (Label)
+    if MODEL_BUNDLE and "target_col" in MODEL_BUNDLE:
+        target_col = MODEL_BUNDLE["target_col"]
+        if target_col in df.columns:
+            df = df.drop(columns=[target_col])
 
     # Predict
-    y_pred = pipe.predict(X).astype(int)
+    try:
+        preds = MODEL.predict(df)
+    except Exception as e:
+        return jsonify({
+            "error": "Prediction failed",
+            "details": str(e),
+            "columns_received": list(df.columns)
+        }), 400
 
-    # Attach predictions
-    out_df = df.copy()
-    out_df["Prediction"] = y_pred
+    df_out = df.copy()
+    df_out["prediction"] = preds
 
-    # Optional probability if model supports it
-    if hasattr(pipe, "predict_proba"):
-        try:
-            proba = pipe.predict_proba(X)[:, 1]
-            out_df["Prob_Malware"] = proba
-        except Exception:
-            pass
+    # Return as CSV download
+    output = io.StringIO()
+    df_out.to_csv(output, index=False)
+    output.seek(0)
 
-    # Metrics only if Label exists
-    metrics = None
-    if y is not None:
-        metrics = compute_metrics(y, y_pred)
-
-    # Build output CSV in-memory
-    buf = io.StringIO()
-    out_df.to_csv(buf, index=False)
-    buf.seek(0)
-
-    return render_template(
-        "results.html",
-        filename=f.filename,
-        rows=len(out_df),
-        metrics=metrics,
-        download_ready=True,
-    ), 200, {
-        "X-Download-Filename": "predictions.csv"
-    }
+    return send_file(
+        io.BytesIO(output.getvalue().encode()),
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="predictions.csv"
+    )
 
 
-@app.get("/download-latest")
-def download_latest():
-    """
-    Simple helper: returns a tiny CSV placeholder if you want a stable download route later.
-    You can expand this to store last output in session / disk.
-    """
-    return jsonify(error="Not implemented: use the browser download prompt from /predict-csv"), 400
-
-
+# =====================================================
+# RUN
+# =====================================================
 if __name__ == "__main__":
-    # For local dev
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(debug=True)

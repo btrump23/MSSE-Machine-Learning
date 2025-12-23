@@ -1,6 +1,33 @@
+# Virtual environments
 .venv/
+env/
+venv/
+
+# Visual Studio / IDE
 .vs/
-Data/
-data/
-*.csv
+.vscode/
+*.user
+*.suo
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Model artifacts / binaries
+*.pkl
+*.joblib
+artifacts/
+
+# ML tool outputs
+catboost_info/
+
+# Generated results
+*predictions*.csv
+*results*.csv
+
+# Archives
 *.zip
+
+# OS junk
+Thumbs.db
+.DS_Store

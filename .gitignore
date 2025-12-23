@@ -1,3 +1,15 @@
+# Big datasets
+data/raw/
+data/processed/
+*.zip
+
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+New-Item -ItemType File data\raw\.gitkeep -Force
+New-Item -ItemType File data\processed\.gitkeep -Force
+
+
 # Virtual environments
 .venv/
 env/

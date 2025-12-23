@@ -51,7 +51,7 @@ def index():
 @app.route("/predict_csv", methods=["POST"])
 def predict_csv():
     df = pd.read_csv(io.BytesIO(request.files["file"].read()))
-    preds = MODEL.predict(df)
+    preds = (MODEL.get("pipeline") or MODEL.get("model") or MODEL.get("estimator") or MODEL.get("clf") or MODEL).predict(df) if isinstance(MODEL, dict) else MODEL.predict(df)
     preds = [p.item() if hasattr(p, "item") else p for p in preds]
     return jsonify(predictions=preds[:20])
 

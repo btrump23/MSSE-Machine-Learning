@@ -2,6 +2,9 @@
 data/raw/
 data/processed/
 *.zip
+catboost_info/
+artifacts/
+
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep

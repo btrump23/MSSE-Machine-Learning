@@ -28,7 +28,7 @@ def load_model():
         raise TypeError("Loaded object has no predict()")
     return obj
 
-MODEL = load_model()
+MODEL = None
 
 HTML = """
 <!doctype html>

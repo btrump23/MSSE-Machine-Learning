@@ -1,4 +1,9 @@
-﻿"""
+﻿global MODEL
+if MODEL is None:
+    MODEL = load_model()
+
+
+"""
 predict.py
 
 Batch prediction + optional metrics for the malware detector project.

@@ -3,8 +3,12 @@ import io
 import pandas as pd
 from flask import Flask, request, jsonify, render_template_string
 import joblib
+APP_VERSION = "27d7dc0-msse-prod-check"
 
 app = Flask(__name__)
+@app.get("/version")
+def version():
+    return {"version": APP_VERSION}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")

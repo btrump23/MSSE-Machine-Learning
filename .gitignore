@@ -1,11 +1,17 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 1499e9d (Remove large datasets from repo tracking)
 # Big datasets
 data/raw/
 data/processed/
 *.zip
+<<<<<<< HEAD
 catboost_info/
 artifacts/
 
+=======
+>>>>>>> 1499e9d (Remove large datasets from repo tracking)
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep

@@ -16,8 +16,18 @@ from flask import Flask, request, jsonify, send_file, Response, render_template_
 # =========================
 APP_VERSION = "prod-modelzip-v3-form-download"
 
+
 # GitHub Release asset (must be public or accessible)
-MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/latest/download/model.zip"
+MODEL_ZIP_URL = os.getenv(
+    "MODEL_ZIP_URL",
+    "https://github.com/btrump23/MSSE-Machine-Learning/releases/download/model-v1/model.zip"
+)
+
+print(f"[startup] MODEL_ZIP_URL={MODEL_ZIP_URL!r}")
+
+if "github.com/btrump23/MSSE-Machine-Learning/releases/download/model-v1/model.zip" not in MODEL_ZIP_URL:
+    raise RuntimeError(f"WRONG MODEL_ZIP_URL in production: {MODEL_ZIP_URL!r}")
+
 
 # Where we cache the downloaded zip + extracted model on the server
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

@@ -64,6 +64,7 @@ venv/
 # Python cache
 __pycache__/
 *.pyc
+.cache/
 
 # Model artifacts / binaries
 *.pkl

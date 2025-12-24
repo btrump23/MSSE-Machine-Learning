@@ -21,7 +21,7 @@ MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/late
 
 # Where we cache the downloaded zip + extracted model on the server
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(BASE_DIR, "model_cache")
+CACHE_DIR = os.path.join(BASE_DIR, ".cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 CACHED_ZIP_PATH = os.path.join(CACHE_DIR, "model.zip")
@@ -78,7 +78,10 @@ HTML_PAGE = """
 app = Flask(__name__)
 
 
-def _json_error(message: str, status_code: int = 500, trace: str | None = None):
+from typing import Optional
+
+def _json_error(message: str, status_code: int = 500, trace: Optional[str] = None):
+
     payload = {"status": "error", "message": message}
     if trace:
         payload["trace"] = trace

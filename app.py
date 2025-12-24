@@ -2,10 +2,9 @@
 import io
 import urllib.request
 import zipfile
-from datetime import datetime
 
 import pandas as pd
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 import joblib
 
 app = Flask(__name__)
@@ -13,7 +12,7 @@ app = Flask(__name__)
 # ================= CONFIG =================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Local model path (will exist locally; in prod we download it)
+# Local model path (exists locally; in prod we download it)
 MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
 
 # GitHub Release asset (ZIP) URL (uploads block .pkl, so we host model.zip)
@@ -23,7 +22,10 @@ MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/down
 TARGET_COLUMN = None
 
 # For sanity checking deployment
-APP_VERSION = "prod-modelzip-v1"
+APP_VERSION = "prod-modelzip-v2-download-csv"
+
+# Lazy-loaded model cache
+MODEL = None
 
 
 # ================= MODEL DOWNLOAD/LOAD =================
@@ -56,6 +58,7 @@ def ensure_model_exists():
 
 
 def load_model():
+    """Load model from disk, handling both plain estimators and dict bundles."""
     ensure_model_exists()
 
     obj = joblib.load(MODEL_PATH)
@@ -73,11 +76,8 @@ def load_model():
     return obj
 
 
-# Lazy-load so Render can boot even if model isn't present until first request
-MODEL = None
-
-
 def get_model():
+    """Lazy-load model so the service can start even if model isn't present until first request."""
     global MODEL
     if MODEL is None:
         MODEL = load_model()
@@ -101,17 +101,36 @@ HTML_PAGE = """
   <form id="form" enctype="multipart/form-data">
     <input type="file" name="file" accept=".csv" required />
     <br />
-    <button type="submit">Predict</button>
+    <button type="submit">Predict (Download CSV)</button>
   </form>
 
-  <h3>Result</h3>
+  <h3>Status</h3>
   <pre id="output">Waiting...</pre>
 
 <script>
 document.getElementById("form").onsubmit = async (e) => {
   e.preventDefault();
   const data = new FormData(e.target);
+
   const res = await fetch("/predict_csv", { method: "POST", body: data });
+
+  // If server returns a CSV, trigger a download
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("text/csv")) {
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "predictions.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+    document.getElementById("output").textContent = "Downloaded predictions.csv";
+    return;
+  }
+
+  // Otherwise show JSON error/info
   const json = await res.json();
   document.getElementById("output").textContent = JSON.stringify(json, null, 2);
 };
@@ -153,29 +172,15 @@ def predict_csv():
         preds = model.predict(df)
         preds_list = [p.item() if hasattr(p, "item") else p for p in preds]
 
-        # Write output CSV next to app.py (timestamped)
         out = df.copy()
         out["prediction"] = preds_list
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(BASE_DIR, f"predictions_{ts}.csv")
-        out.to_csv(output_path, index=False)
 
-        # Optional probabilities if available
-        probs = None
-        if hasattr(model, "predict_proba"):
-            try:
-                probs = model.predict_proba(df).max(axis=1).tolist()
-            except Exception:
-                probs = None
-
-        return jsonify(
-            {
-                "status": "ok",
-                "rows": len(preds_list),
-                "predictions_preview": preds_list[:20],
-                "probabilities_preview": probs[:20] if probs else None,
-                "output_file": output_path,
-            }
+        # Return CSV as a download (works locally AND on Render)
+        csv_bytes = out.to_csv(index=False).encode("utf-8")
+        return Response(
+            csv_bytes,
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=predictions.csv"},
         )
 
     except Exception as e:

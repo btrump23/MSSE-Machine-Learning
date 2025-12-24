@@ -17,7 +17,7 @@ from flask import Flask, request, jsonify, send_file, Response, render_template_
 APP_VERSION = "prod-modelzip-v3-form-download"
 
 # GitHub Release asset (must be public or accessible)
-MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/download/model-v1/model.zip"
+MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/latest/download/model.zip"
 
 # Where we cache the downloaded zip + extracted model on the server
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

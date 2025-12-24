@@ -12,19 +12,12 @@ app = Flask(__name__)
 # ================= CONFIG =================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Local model path (exists locally; in prod we download it)
 MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
-
-# GitHub Release asset (ZIP) URL (uploads block .pkl, so we host model.zip)
 MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/download/model-v1/model.zip"
 
-# Optional: if your CSV includes a label column you want dropped before prediction
 TARGET_COLUMN = None
+APP_VERSION = "prod-modelzip-v3-form-download"  # bump so you can verify deploy
 
-# For sanity checking deployment
-APP_VERSION = "prod-modelzip-v2-download-csv"
-
-# Lazy-loaded model cache
 MODEL = None
 
 
@@ -49,7 +42,6 @@ def ensure_model_exists():
     except OSError:
         pass
 
-    # Final check
     if not os.path.exists(MODEL_PATH):
         raise FileNotFoundError(
             f"Downloaded and extracted model.zip but {MODEL_PATH} still not found. "
@@ -85,6 +77,7 @@ def get_model():
 
 
 # ================= UI =================
+# IMPORTANT: No fetch() here. For file downloads, let the browser submit the form normally.
 HTML_PAGE = """
 <!doctype html>
 <html>
@@ -98,7 +91,8 @@ HTML_PAGE = """
 </head>
 <body>
   <h2>Upload CSV</h2>
-  <form id="form" enctype="multipart/form-data">
+
+  <form method="post" enctype="multipart/form-data" action="/predict_csv" onsubmit="showRunning()">
     <input type="file" name="file" accept=".csv" required />
     <br />
     <button type="submit">Predict (Download CSV)</button>
@@ -108,32 +102,11 @@ HTML_PAGE = """
   <pre id="output">Waiting...</pre>
 
 <script>
-document.getElementById("form").onsubmit = async (e) => {
-  e.preventDefault();
-  const data = new FormData(e.target);
-
-  const res = await fetch("/predict_csv", { method: "POST", body: data });
-
-  // If server returns a CSV, trigger a download
-  const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("text/csv")) {
-    const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "predictions.csv";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
-    document.getElementById("output").textContent = "Downloaded predictions.csv";
-    return;
-  }
-
-  // Otherwise show JSON error/info
-  const json = await res.json();
-  document.getElementById("output").textContent = JSON.stringify(json, null, 2);
-};
+function showRunning() {
+  document.getElementById("output").textContent =
+    "Running... first request on Render may take 1–2 minutes (downloading/loading model).";
+  return true; // allow normal form submit
+}
 </script>
 </body>
 </html>
@@ -153,7 +126,7 @@ def version():
 # ================= PREDICT =================
 @app.route("/predict_csv", methods=["GET", "POST"])
 def predict_csv():
-    # GET shows a friendly page instead of 405
+    # GET shows the upload page
     if request.method == "GET":
         return render_template_string(HTML_PAGE)
 
@@ -175,7 +148,7 @@ def predict_csv():
         out = df.copy()
         out["prediction"] = preds_list
 
-        # Return CSV as a download (works locally AND on Render)
+        # Return CSV as a direct download (works locally AND on Render)
         csv_bytes = out.to_csv(index=False).encode("utf-8")
         return Response(
             csv_bytes,

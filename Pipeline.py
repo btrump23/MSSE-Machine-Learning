@@ -1,17 +1,19 @@
 """
-Compatibility shim for unpickling legacy models.
+Pipeline.py
 
-Your saved model references a module named `Pipeline` (capital P) and expects
-certain symbols on that module during pickle.load().
+Compatibility shim for unpickling the saved model in production (Render/Linux)
+and locally (Windows). Your pickle references a module named `Pipeline`
+(capital P) and expects certain symbols (e.g., `dtype`) to exist at module scope.
+
+Keep this file in the SAME folder as predict.py and model.pkl.
 """
 
 import numpy as np
 from sklearn.pipeline import Pipeline as SklearnPipeline
 
-# Re-export so pickles that expect Pipeline.Pipeline can resolve it
+# Some pickles reference Pipeline.Pipeline
 Pipeline = SklearnPipeline
 
-# Pickle is trying to access Pipeline.dtype
-# Provide numpy dtype factory to satisfy it.
+# Your pickle is trying to access Pipeline.dtype
+# Expose numpy's dtype factory at module scope.
 dtype = np.dtype
-

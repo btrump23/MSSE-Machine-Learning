@@ -7,11 +7,15 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(HERE, "model.pkl")
-
 MODEL = None
 MODEL_ERROR = None
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+LOCAL_MODEL = os.path.join(HERE, "model.pkl")
+RENDER_MODEL = "/opt/render/project/src/.cache/model/model.pkl"
+
+MODEL_PATH = RENDER_MODEL if os.path.exists(RENDER_MODEL) else LOCAL_MODEL
 
 
 # -----------------------------

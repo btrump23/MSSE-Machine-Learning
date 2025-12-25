@@ -1,15 +1,24 @@
 ﻿import os
-import pickle
 import traceback
 import numpy as np
 import pandas as pd
+import joblib
 from flask import Flask, request, jsonify
 
+# --------------------------------------------------
+# Flask app
+# --------------------------------------------------
 app = Flask(__name__)
 
+# --------------------------------------------------
+# Globals
+# --------------------------------------------------
 MODEL = None
 MODEL_ERROR = None
 
+# --------------------------------------------------
+# Model path resolution (local vs Render)
+# --------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 LOCAL_MODEL = os.path.join(HERE, "model.pkl")
@@ -18,35 +27,42 @@ RENDER_MODEL = "/opt/render/project/src/.cache/model/model.pkl"
 MODEL_PATH = RENDER_MODEL if os.path.exists(RENDER_MODEL) else LOCAL_MODEL
 
 
-# -----------------------------
-# Model loading (SAFE)
-# -----------------------------
+# --------------------------------------------------
+# Model loader
+# --------------------------------------------------
 def load_model():
     global MODEL, MODEL_ERROR
+
     try:
         if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
+            raise FileNotFoundError(
+                f"Model file not found: {MODEL_PATH}\n"
+                f"HERE={HERE}\n"
+                f"Files in HERE: {os.listdir(HERE)}\n"
+                f"Cache dir exists? {os.path.exists('/opt/render/project/src/.cache')}\n"
+                f"Cache/model exists? {os.path.exists('/opt/render/project/src/.cache/model')}"
+            )
 
-        with open(MODEL_PATH, "rb") as f:
-            obj = pickle.load(f)
+        obj = joblib.load(MODEL_PATH)
 
-        # CASE 1: sklearn-style model
-        if hasattr(obj, "predict"):
-            MODEL = obj
-            print("[startup] Loaded sklearn model")
-
-        # CASE 2: numpy array (THIS IS YOUR CASE)
-        elif isinstance(obj, np.ndarray):
-            MODEL = obj
-            print("[startup] Loaded numpy array model")
-
+        # Expecting a bundle dict
+        if isinstance(obj, dict) and "pipeline" in obj:
+            MODEL = obj["pipeline"]
         else:
-            raise TypeError(f"Unsupported model type: {type(obj)}")
+            MODEL = obj  # fallback (not expected, but safe)
+
+        if not hasattr(MODEL, "predict"):
+            raise TypeError(
+                f"Loaded object has no .predict().\n"
+                f"Top-level type: {type(obj)}\n"
+                f"Model type: {type(MODEL)}"
+            )
 
         MODEL_ERROR = None
+        print("[startup] MODEL LOADED OK:", type(MODEL))
         return MODEL
 
-    except Exception as e:
+    except Exception:
         MODEL = None
         MODEL_ERROR = traceback.format_exc()
         print("[startup] MODEL LOAD FAILED")
@@ -54,14 +70,16 @@ def load_model():
         return None
 
 
-# Load at startup
+# --------------------------------------------------
+# Load model at startup
+# --------------------------------------------------
 load_model()
 
 
-# -----------------------------
+# --------------------------------------------------
 # Health check
-# -----------------------------
-@app.route("/")
+# --------------------------------------------------
+@app.route("/", methods=["GET"])
 def health():
     if MODEL is None:
         return jsonify({
@@ -76,48 +94,46 @@ def health():
     })
 
 
-# -----------------------------
-# CSV Prediction Endpoint
-# -----------------------------
+# --------------------------------------------------
+# CSV prediction endpoint
+# --------------------------------------------------
 @app.route("/predict_csv", methods=["POST", "GET"])
 def predict_csv():
+    if MODEL is None:
+        return jsonify({
+            "status": "error",
+            "message": "Model not loaded",
+            "trace": MODEL_ERROR
+        }), 500
+
     try:
-        if MODEL is None:
-            raise RuntimeError("Model not loaded")
+        # Accept file upload or query-based CSV
+        if request.method == "POST":
+            if "file" not in request.files:
+                raise ValueError("No file uploaded")
 
-        if "file" not in request.files:
-            raise ValueError("No CSV file uploaded")
-
-        file = request.files["file"]
-        df = pd.read_csv(file)
-
-        X = df.values
-
-        # --------- PREDICTION LOGIC ----------
-        if hasattr(MODEL, "predict"):
-            preds = MODEL.predict(X)
-
-        elif isinstance(MODEL, np.ndarray):
-            # Simple dot-product style prediction
-            if X.shape[1] != MODEL.shape[0]:
-                raise ValueError(
-                    f"Shape mismatch: X has {X.shape[1]} columns, "
-                    f"model expects {MODEL.shape[0]}"
-                )
-            preds = X @ MODEL
+            file = request.files["file"]
+            df = pd.read_csv(file)
 
         else:
-            raise TypeError("Unsupported model type at prediction time")
+            raise ValueError("POST a CSV file using multipart/form-data")
 
+        if df.empty:
+            raise ValueError("Uploaded CSV is empty")
+
+        # Predict
+        preds = MODEL.predict(df)
+
+        # Attach predictions
         df["prediction"] = preds
 
         return jsonify({
-            "status": "success",
+            "status": "ok",
             "rows": len(df),
-            "preview": df.head(5).to_dict(orient="records")
+            "predictions": df["prediction"].tolist()
         })
 
-    except Exception as e:
+    except Exception:
         return jsonify({
             "status": "error",
             "message": "Prediction failed",
@@ -125,8 +141,8 @@ def predict_csv():
         }), 500
 
 
-# -----------------------------
-# Render / Gunicorn entrypoint
-# -----------------------------
+# --------------------------------------------------
+# Local dev entrypoint (Render ignores this)
+# --------------------------------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -48,8 +48,8 @@ def health():
 def predict_gui():
     return render_template("index.html")
 
-@app.post("/predict")
-def predict():
+@app.post("/predict-csv")
+def predict_csv():
     if "file" not in request.files:
         return "No file uploaded", 400
 
@@ -62,40 +62,19 @@ def predict():
     preds = model.predict(df)
     df["prediction"] = preds
 
-    print("✅ HIT /predict-csv")
-    print("FILES:", list(request.files.keys()))
-    print("DOWNLOADS_DIR:", DOWNLOADS_DIR)
-
-
-    output_file = "predictions_output.csv"
-    output_path = os.path.join(DOWNLOADS_DIR, output_file)
-    df.to_csv(output_path, index=False)
-    print("Saving output to:", output_path)
-
-    print("✅ SAVED:", os.path.exists(output_path), output_path)
-
-    #return render_template(
-    #    "index.html",
-    #    download_file=output_file,
-    #    rows=len(df)
-    #)
-    #from flask import redirect, url_for
-
-    #return redirect(url_for("download_file", filename=output_file))
-    from flask import send_file
+    # Return CSV directly to browser
     import io
-
-    # after df["prediction"] is added
-    buf = io.BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
+    buffer = io.BytesIO()
+    df.to_csv(buffer, index=False)
+    buffer.seek(0)
 
     return send_file(
-        buf,
+        buffer,
         mimetype="text/csv",
         as_attachment=True,
         download_name="predictions_output.csv"
-)
+    )
+
 
 
 @app.get("/downloads/<path:filename>")

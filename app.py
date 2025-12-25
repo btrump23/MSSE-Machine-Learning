@@ -1,15 +1,19 @@
 ﻿import os
-import io
 import uuid
 import pickle
 import datetime as dt
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from flask import (
-    Flask, request, render_template, jsonify,
-    send_file, redirect, url_for
+    Flask,
+    request,
+    render_template,
+    jsonify,
+    send_file,
+    redirect,
+    url_for,
 )
 
 from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
@@ -21,7 +25,7 @@ app = Flask(__name__)
 # Paths
 # ---------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")   # keep as model.pkl like you trained
+MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
 DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
@@ -32,12 +36,70 @@ with open(MODEL_PATH, "rb") as f:
     model = pickle.load(f)
 
 if not hasattr(model, "predict"):
-    raise TypeError(f"Loaded object from {MODEL_PATH} is {type(model)} and has no predict().")
+    raise TypeError(
+        f"Loaded object from {MODEL_PATH} is {type(model)} and has no predict()."
+    )
 
 
 # ---------------------------
 # Helpers
 # ---------------------------
+def _model_feature_names():
+    """
+    If the model/pipeline was fit on a DataFrame, scikit-learn may store feature_names_in_.
+    We use it to:
+      - show a correct manual-entry form
+      - align CSV columns at inference time
+    """
+    names = getattr(model, "feature_names_in_", None)
+    if names is None:
+        return None
+    return list(names)
+
+
+def _coerce_numeric_series(s: pd.Series) -> pd.Series:
+    """Convert a pandas series to numeric where possible; keep NaN for bad values."""
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _align_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Align incoming df to the model's expected feature list (if known).
+    - Drops Label if present
+    - Reorders columns
+    - Adds missing columns with 0
+    - Coerces to numeric
+    """
+    df = df.copy()
+
+    if "Label" in df.columns:
+        df = df.drop(columns=["Label"])
+
+    expected = _model_feature_names()
+    if expected:
+        # add missing cols as 0
+        for c in expected:
+            if c not in df.columns:
+                df[c] = 0
+
+        # drop extra columns not used by model
+        extra = [c for c in df.columns if c not in expected]
+        if extra:
+            df = df.drop(columns=extra)
+
+        # reorder
+        df = df[expected]
+
+    # coerce all columns numeric (safe for sklearn)
+    for c in df.columns:
+        df[c] = _coerce_numeric_series(df[c])
+
+    # fill remaining NaNs (if user left blanks) with 0
+    df = df.fillna(0)
+
+    return df
+
+
 def _safe_predict_proba_or_score(X: pd.DataFrame):
     """
     Returns a float score per row used for ROC AUC.
@@ -46,10 +108,9 @@ def _safe_predict_proba_or_score(X: pd.DataFrame):
     """
     if hasattr(model, "predict_proba"):
         proba = model.predict_proba(X)
-        # binary: use column for class 1 if available
+        proba = np.asarray(proba)
         if proba.ndim == 2 and proba.shape[1] >= 2:
             return proba[:, 1]
-        # fallback
         return proba.ravel()
 
     if hasattr(model, "decision_function"):
@@ -59,9 +120,8 @@ def _safe_predict_proba_or_score(X: pd.DataFrame):
     return None
 
 
-def _make_confusion_matrix_table(cm: np.ndarray, labels=("0", "1")):
-    """Return a simple HTML table string for the confusion matrix."""
-    # cm expected [[tn, fp],[fn,tp]]
+def _make_confusion_matrix_html(cm: np.ndarray, labels=("0", "1")) -> str:
+    """Return a simple HTML table string for confusion matrix."""
     return f"""
     <table border="1" cellpadding="6" cellspacing="0">
       <tr>
@@ -77,21 +137,16 @@ def _make_confusion_matrix_table(cm: np.ndarray, labels=("0", "1")):
     """
 
 
-def _normalize_columns_for_inference(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensures we don't include Label in the features,
-    and keeps dataframe clean.
-    """
-    df = df.copy()
-    # common label column name in your assignment = Label
-    if "Label" in df.columns:
-        df = df.drop(columns=["Label"])
-    return df
+def _predict_labels(X: pd.DataFrame) -> pd.Series:
+    preds = model.predict(X)
+    return pd.Series(np.asarray(preds).ravel(), name="Prediction")
 
 
-def _predict_dataframe(df_features: pd.DataFrame) -> pd.Series:
-    preds = model.predict(df_features)
-    return pd.Series(preds, name="Prediction")
+def _label_to_text(pred_value: int) -> str:
+    try:
+        return "malware" if int(pred_value) == 1 else "goodware"
+    except Exception:
+        return str(pred_value)
 
 
 # ---------------------------
@@ -99,141 +154,196 @@ def _predict_dataframe(df_features: pd.DataFrame) -> pd.Series:
 # ---------------------------
 @app.get("/health")
 def health():
-    return jsonify(status="ok", model_type=str(type(model)))
+    return jsonify(
+        status="ok",
+        model_path=MODEL_PATH,
+        model_type=str(type(model)),
+        downloads_dir=DOWNLOADS_DIR,
+        expected_features=_model_feature_names(),
+    )
 
 
 @app.get("/")
 def home():
-    # simple landing
+    # If you have an index.html, you can swap this to render_template("index.html")
     return redirect(url_for("predict_csv"))
 
 
-# ---------- Manual single-row prediction ----------
-@app.get("/predict-manual")
+# ---------------------------
+# Manual single-row prediction
+# ---------------------------
+@app.route("/predict-manual", methods=["GET", "POST"])
 def predict_manual():
-    # Pre-filled demo row (you can replace values with a known row from dataset)
-    demo = {
-        # Put a small set OR all 29 features if you want.
-        # Minimal approach: show all columns from your training schema if you know them.
-        # If you don't know all, keep a "paste full row" style is not ideal for marking.
-        # Better: keep the full feature list you used.
-        "BaseOfCode": 4096,
-        "BaseOfData": 8192,
-        "Characteristics": 258,
-        "DllCharacteristics": 0,
-        "Entropy": 6.5,
-        "FileAlignment": 512,
-        "ImageBase": 4194304,
-        "ImportedDlls": 12,
-        "ImportedSymbols": 900,
-        "Machine": 332,
-        "Magic": 267,
-        "NumberOfRvaAndSizes": 16,
-        "NumberOfSections": 5,
-        "NumberOfSymbols": 0,
-        "PE_TYPE": 0,
-        "PointerToSymbolTable": 0,
-        "Size": 123456,
-        "SizeOfCode": 40960,
-        "SizeOfHeaders": 1024,
-        "SizeOfImage": 65536,
-        "SizeOfInitializedData": 8192,
-        "SizeOfOptionalHeader": 224,
-        "SizeOfUninitializedData": 0,
-        "TimeDateStamp": 1234567890
-    }
-    return render_template("predict_manual.html", demo=demo, result=None, error=None)
+    # Build demo dict based on model expected features (best for marking)
+    feature_names = _model_feature_names()
 
+    if feature_names:
+        demo = {name: 0 for name in feature_names}
+    else:
+        # fallback demo (only used if feature_names_in_ not available)
+        demo = {
+            "BaseOfCode": 4096,
+            "BaseOfData": 8192,
+            "Characteristics": 258,
+            "DllCharacteristics": 0,
+            "Entropy": 6.5,
+            "FileAlignment": 512,
+            "ImageBase": 4194304,
+            "ImportedDlls": 12,
+            "ImportedSymbols": 900,
+            "Machine": 332,
+            "Magic": 267,
+            "NumberOfRvaAndSizes": 16,
+            "NumberOfSections": 5,
+            "NumberOfSymbols": 0,
+            "PE_TYPE": 0,
+            "PointerToSymbolTable": 0,
+            "Size": 123456,
+            "SizeOfCode": 40960,
+            "SizeOfHeaders": 1024,
+            "SizeOfImage": 65536,
+            "SizeOfInitializedData": 8192,
+            "SizeOfOptionalHeader": 224,
+            "SizeOfUninitializedData": 0,
+            "TimeDateStamp": 1234567890,
+        }
 
-@app.post("/predict-manual")
-def predict_manual_post():
+    if request.method == "GET":
+        return render_template(
+            "predict_manual.html",
+            demo=demo,
+            result=None,
+            error=None,
+        )
+
+    # POST
     try:
-        # Build one-row dataframe from form inputs
         row = {}
+
+        # Only accept expected feature names (prevents random form fields breaking things)
+        allowed = set(feature_names) if feature_names else None
+
         for k, v in request.form.items():
-            # convert numeric strings safely
-            if v is None or v.strip() == "":
-                row[k] = np.nan
-            else:
-                # try int then float
-                try:
-                    row[k] = int(v)
-                except ValueError:
-                    row[k] = float(v)
+            if allowed is not None and k not in allowed:
+                continue
+
+            if v is None or str(v).strip() == "":
+                row[k] = 0
+                continue
+
+            # try int then float
+            try:
+                row[k] = int(v)
+            except ValueError:
+                row[k] = float(v)
 
         X = pd.DataFrame([row])
-        pred = _predict_dataframe(X).iloc[0]
-        label = "malware" if int(pred) == 1 else "goodware"
-        return render_template("predict_manual.html", demo=row, result=label, error=None)
+        X = _align_features(X)
+
+        pred = _predict_labels(X).iloc[0]
+        label_text = _label_to_text(pred)
+
+        # show what user submitted in the form (keep fields stable)
+        show_demo = {**demo, **row}
+
+        return render_template(
+            "predict_manual.html",
+            demo=show_demo,
+            result=label_text,
+            error=None,
+        )
+
     except Exception as e:
-        return render_template("predict_manual.html", demo=request.form, result=None, error=str(e))
+        # show the posted fields if possible
+        show_demo = {**demo, **dict(request.form)}
+        return render_template(
+            "predict_manual.html",
+            demo=show_demo,
+            result=None,
+            error=str(e),
+        )
 
 
-# ---------- CSV prediction + evaluation ----------
-@app.get("/predict-csv")
+# ---------------------------
+# CSV prediction + evaluation
+# ---------------------------
+@app.route("/predict-csv", methods=["GET", "POST"])
 def predict_csv():
-    return render_template("predict_csv.html", metrics=None, preview=None, download_url=None, error=None)
+    if request.method == "GET":
+        return render_template(
+            "predict_csv.html",
+            metrics=None,
+            preview=None,
+            download_url=None,
+            error=None,
+        )
 
-
-@app.post("/predict-csv")
-def predict_csv_post():
+    # POST
     try:
         if "file" not in request.files:
-            return render_template("predict_csv.html", metrics=None, preview=None, download_url=None, error="No file uploaded.")
+            return render_template(
+                "predict_csv.html",
+                metrics=None,
+                preview=None,
+                download_url=None,
+                error="No file uploaded (missing form field named 'file').",
+            )
 
         f = request.files["file"]
-        if f.filename == "":
-            return render_template("predict_csv.html", metrics=None, preview=None, download_url=None, error="No file selected.")
+        if not f or f.filename == "":
+            return render_template(
+                "predict_csv.html",
+                metrics=None,
+                preview=None,
+                download_url=None,
+                error="No file selected.",
+            )
 
         df = pd.read_csv(f)
 
         has_labels = "Label" in df.columns
-        y_true = None
-        if has_labels:
-            y_true = df["Label"].copy()
+        y_true = df["Label"].copy() if has_labels else None
 
-        X = _normalize_columns_for_inference(df)
-        preds = _predict_dataframe(X)
+        X = _align_features(df)
+        preds = _predict_labels(X)
 
-        # attach predictions
         df_out = df.copy()
         df_out["Prediction"] = preds
+        df_out["PredictionLabel"] = df_out["Prediction"].apply(_label_to_text)
 
-        # ---- metrics if labels present ----
         metrics = None
         if has_labels:
-            # accuracy
-            acc = float(accuracy_score(y_true, preds))
+            # Ensure y_true numeric 0/1
+            y_true_num = pd.to_numeric(y_true, errors="coerce").fillna(0).astype(int)
 
-            # AUC (needs scores/probabilities)
+            acc = float(accuracy_score(y_true_num, preds.astype(int)))
+
             scores = _safe_predict_proba_or_score(X)
             auc = None
             if scores is not None:
                 try:
-                    auc = float(roc_auc_score(y_true, scores))
+                    auc = float(roc_auc_score(y_true_num, scores))
                 except Exception:
                     auc = None
 
-            # confusion matrix
-            cm = confusion_matrix(y_true, preds, labels=[0, 1])
-            cm_html = _make_confusion_matrix_table(cm, labels=("0", "1"))
+            cm = confusion_matrix(y_true_num, preds.astype(int), labels=[0, 1])
+            cm_html = _make_confusion_matrix_html(cm, labels=("0", "1"))
 
             metrics = {
                 "accuracy": acc,
                 "auc": auc,
-                "confusion_matrix_html": cm_html
+                "confusion_matrix_html": cm_html,
             }
 
-        # ---- save output CSV to downloads dir + create download link ----
+        # Save output CSV to downloads dir
         token = uuid.uuid4().hex[:10]
         ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_name = f"predictions_{ts}_{token}.csv"
         out_path = os.path.join(DOWNLOADS_DIR, out_name)
         df_out.to_csv(out_path, index=False)
 
-        # Preview first 10 rows (nice for marking)
+        # Preview for marking (first 10 rows)
         preview = df_out.head(10).to_dict(orient="records")
-
         download_url = url_for("download_file", filename=out_name)
 
         return render_template(
@@ -241,21 +351,27 @@ def predict_csv_post():
             metrics=metrics,
             preview=preview,
             download_url=download_url,
-            error=None
+            error=None,
         )
 
     except Exception as e:
-        return render_template("predict_csv.html", metrics=None, preview=None, download_url=None, error=str(e))
+        return render_template(
+            "predict_csv.html",
+            metrics=None,
+            preview=None,
+            download_url=None,
+            error=str(e),
+        )
 
 
 @app.get("/download/<path:filename>")
 def download_file(filename):
-    # This is what makes the browser download to the user's computer.
     full_path = os.path.join(DOWNLOADS_DIR, filename)
     if not os.path.isfile(full_path):
         return f"File not found: {filename}", 404
 
-    return send_file(full_path, as_attachment=True, download_name=filename)
+    # This returns the file in the HTTP response so the browser downloads it to the user's PC
+    return send_file(full_path, as_attachment=True, download_name=filename, mimetype="text/csv")
 
 
 if __name__ == "__main__":

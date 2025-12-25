@@ -2,7 +2,7 @@
 #import pickle
 import pandas as pd
 import joblib
-from flask import Flask, request, render_template, send_from_directory, jsonify
+from flask import Flask, request, render_template, send_from_directory, jsonify, send_file
 
 app = Flask(__name__)
 
@@ -33,9 +33,6 @@ if not hasattr(model, "predict"):
 # Routes
 # ------------------------
 
-@app.post("/predict-csv")
-def predict_csv():
-    return predict()   # reuse the existing predict() function
 
 @app.get("/health")
 def health():
@@ -48,28 +45,28 @@ def health():
 def predict_gui():
     return render_template("index.html")
 
+@app.get("/predict-csv")
+def predict_csv_page():
+    return render_template("index.html")
+
+
 @app.post("/predict-csv")
 def predict_csv():
-    if "file" not in request.files:
+    file = request.files.get("file")
+    if not file or file.filename == "":
         return "No file uploaded", 400
 
-    file = request.files["file"]
-    if file.filename == "":
-        return "Empty filename", 400
-
     df = pd.read_csv(file)
-
     preds = model.predict(df)
     df["prediction"] = preds
 
-    # Return CSV directly to browser
     import io
-    buffer = io.BytesIO()
-    df.to_csv(buffer, index=False)
-    buffer.seek(0)
+    buf = io.BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
 
     return send_file(
-        buffer,
+        buf,
         mimetype="text/csv",
         as_attachment=True,
         download_name="predictions_output.csv"

@@ -74,11 +74,15 @@ def predict():
 
     print("✅ SAVED:", os.path.exists(output_path), output_path)
 
-    return render_template(
-        "index.html",
-        download_file=output_file,
-        rows=len(df)
-    )
+    #return render_template(
+    #    "index.html",
+    #    download_file=output_file,
+    #    rows=len(df)
+    #)
+    from flask import redirect, url_for
+
+    return redirect(url_for("download_file", filename=output_file))
+
 
 @app.get("/downloads/<path:filename>")
 def download_file(filename):

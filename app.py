@@ -32,13 +32,32 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 # ---------------------------
 # Load model once
 # ---------------------------
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+def load_model(model_path: str):
+    with open(model_path, "rb") as f:
+        obj = pickle.load(f)
 
-if not hasattr(model, "predict"):
+    # Case 1: it's already a model/pipeline
+    if hasattr(obj, "predict"):
+        return obj
+
+    # Case 2: common pattern: pickle contains a dict bundle
+    if isinstance(obj, dict):
+        for k in ("model", "pipeline", "estimator", "clf", "classifier"):
+            if k in obj and hasattr(obj[k], "predict"):
+                return obj[k]
+
+    # Case 3: common pattern: tuple/list bundle (model first)
+    if isinstance(obj, (list, tuple)) and len(obj) > 0 and hasattr(obj[0], "predict"):
+        return obj[0]
+
+    # If we get here, it's genuinely not a usable model
     raise TypeError(
-        f"Loaded object from {MODEL_PATH} is {type(model)} and has no predict()."
+        f"Loaded object from {model_path} is {type(obj)} and has no predict(). "
+        f"If it's a bundle, ensure it contains a key like 'model'/'pipeline' with a sklearn estimator."
     )
+
+model = load_model(MODEL_PATH)
+
 
 
 # ---------------------------

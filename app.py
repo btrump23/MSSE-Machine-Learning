@@ -1,148 +1,74 @@
 ﻿import os
-import traceback
-import numpy as np
+import pickle
 import pandas as pd
-import joblib
-from flask import Flask, request, jsonify
+from flask import Flask, request, render_template, send_from_directory, jsonify
 
-# --------------------------------------------------
-# Flask app
-# --------------------------------------------------
 app = Flask(__name__)
 
-# --------------------------------------------------
-# Globals
-# --------------------------------------------------
-MODEL = None
-MODEL_ERROR = None
-
-# --------------------------------------------------
-# Model path resolution (local vs Render)
-# --------------------------------------------------
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-LOCAL_MODEL = os.path.join(HERE, "model.pkl")
-RENDER_MODEL = "/opt/render/project/src/.cache/model/model.pkl"
-
-MODEL_PATH = RENDER_MODEL if os.path.exists(RENDER_MODEL) else LOCAL_MODEL
 
 
-# --------------------------------------------------
-# Model loader
-# --------------------------------------------------
-def load_model():
-    global MODEL, MODEL_ERROR
+# ------------------------
+# Paths
+# ------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
+DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
 
-    try:
-        if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(
-                f"Model file not found: {MODEL_PATH}\n"
-                f"HERE={HERE}\n"
-                f"Files in HERE: {os.listdir(HERE)}\n"
-                f"Cache dir exists? {os.path.exists('/opt/render/project/src/.cache')}\n"
-                f"Cache/model exists? {os.path.exists('/opt/render/project/src/.cache/model')}"
-            )
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
-        obj = joblib.load(MODEL_PATH)
+# ------------------------
+# Load model
+# ------------------------
+with open(MODEL_PATH, "rb") as f:
+    model = pickle.load(f)
 
-        # Expecting a bundle dict
-        if isinstance(obj, dict) and "pipeline" in obj:
-            MODEL = obj["pipeline"]
-        else:
-            MODEL = obj  # fallback (not expected, but safe)
+# ------------------------
+# Routes
+# ------------------------
 
-        if not hasattr(MODEL, "predict"):
-            raise TypeError(
-                f"Loaded object has no .predict().\n"
-                f"Top-level type: {type(obj)}\n"
-                f"Model type: {type(MODEL)}"
-            )
+@app.post("/predict-csv")
+def predict_csv():
+    return predict()   # reuse the existing predict() function
 
-        MODEL_ERROR = None
-        print("[startup] MODEL LOADED OK:", type(MODEL))
-        return MODEL
-
-    except Exception:
-        MODEL = None
-        MODEL_ERROR = traceback.format_exc()
-        print("[startup] MODEL LOAD FAILED")
-        print(MODEL_ERROR)
-        return None
-
-
-# --------------------------------------------------
-# Load model at startup
-# --------------------------------------------------
-load_model()
-
-
-# --------------------------------------------------
-# Health check
-# --------------------------------------------------
-@app.route("/", methods=["GET"])
+@app.get("/health")
 def health():
-    if MODEL is None:
-        return jsonify({
-            "status": "error",
-            "message": "Model not loaded",
-            "trace": MODEL_ERROR
-        }), 500
-
     return jsonify({
         "status": "ok",
-        "model_type": str(type(MODEL))
+        "model_type": str(type(model))
     })
 
+@app.get("/")
+def predict_gui():
+    return render_template("index.html")
 
-# --------------------------------------------------
-# CSV prediction endpoint
-# --------------------------------------------------
-@app.route("/predict_csv", methods=["POST", "GET"])
-def predict_csv():
-    if MODEL is None:
-        return jsonify({
-            "status": "error",
-            "message": "Model not loaded",
-            "trace": MODEL_ERROR
-        }), 500
+@app.post("/predict")
+def predict():
+    if "file" not in request.files:
+        return "No file uploaded", 400
 
-    try:
-        # Accept file upload or query-based CSV
-        if request.method == "POST":
-            if "file" not in request.files:
-                raise ValueError("No file uploaded")
+    file = request.files["file"]
+    if file.filename == "":
+        return "Empty filename", 400
 
-            file = request.files["file"]
-            df = pd.read_csv(file)
+    df = pd.read_csv(file)
 
-        else:
-            raise ValueError("POST a CSV file using multipart/form-data")
+    preds = model.predict(df)
+    df["prediction"] = preds
 
-        if df.empty:
-            raise ValueError("Uploaded CSV is empty")
+    output_file = "predictions_output.csv"
+    output_path = os.path.join(DOWNLOADS_DIR, output_file)
+    df.to_csv(output_path, index=False)
 
-        # Predict
-        preds = MODEL.predict(df)
+    return render_template(
+        "index.html",
+        download_file=output_file,
+        rows=len(df)
+    )
 
-        # Attach predictions
-        df["prediction"] = preds
+@app.get("/downloads/<path:filename>")
+def download_file(filename):
+    return send_from_directory(DOWNLOADS_DIR, filename, as_attachment=True)
 
-        return jsonify({
-            "status": "ok",
-            "rows": len(df),
-            "predictions": df["prediction"].tolist()
-        })
-
-    except Exception:
-        return jsonify({
-            "status": "error",
-            "message": "Prediction failed",
-            "trace": traceback.format_exc()
-        }), 500
-
-
-# --------------------------------------------------
-# Local dev entrypoint (Render ignores this)
-# --------------------------------------------------
+# ------------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True)

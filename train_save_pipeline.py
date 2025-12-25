@@ -43,7 +43,8 @@ TRAIN_CSV = os.path.join(BASE_DIR, "data", "processed", "train.csv")
 TARGET_COL = "Label"
 
 # Model output path (saved right next to this script)
-MODEL_PATH = os.path.join(BASE_DIR, "model.pkl")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
+
 
 DROP_ALL_MISSING = True
 TEST_SIZE = 0.2

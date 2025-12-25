@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Malware Detector - CSV Prediction</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 820px;
+        }
+
+        .error {
+            color: #b00020;
+            margin-top: 10px;
+        }
+
+        table {
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+
+        th, td {
+            border: 1px solid #ccc;
+            padding: 6px 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Malware Detector</h1>
+
+        <p>
+            <a href="/predict-manual">Manual prediction (single instance)</a>
+        </p>
+
+        <h2>Upload CSV</h2>
+        <form method="POST" action="/predict-csv" enctype="multipart/form-data">
+            <input type="file" name="file" accept=".csv" required>
+            <button type="submit">Run Predictions</button>
+        </form>
+
+        {% if error %}
+        <div class="error"><strong>Error:</strong> {{ error }}</div>
+        {% endif %}
+
+        {% if download_url %}
+        <hr>
+        <p><strong>Done.</strong> Download your output file here:</p>
+        <p><a href="{{ download_url }}">Download predictions CSV</a></p>
+        {% endif %}
+
+        {% if metrics %}
+        <hr>
+        <h2>Evaluation (labels detected)</h2>
+        <p><strong>Accuracy:</strong> {{ "%.4f"|format(metrics.accuracy) }}</p>
+        <p>
+            <strong>AUC:</strong>
+            {% if metrics.auc is not none %}
+            {{ "%.4f"|format(metrics.auc) }}
+            {% else %}
+            <em>Not available (model has no predict_proba/decision_function)</em>
+            {% endif %}
+        </p>
+
+        <h3>Confusion Matrix</h3>
+        <div>{{ metrics.confusion_matrix_html | safe }}</div>
+        {% endif %}
+
+        {% if preview %}
+        <hr>
+        <h2>Preview (first 10 rows)</h2>
+        <table>
+            <thead>
+                <tr>
+                    {% for k in preview[0].keys() %}
+                    <th>{{ k }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in preview %}
+                <tr>
+                    {% for v in row.values() %}
+                    <td>{{ v }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+    </div>
+</body>
+</html>

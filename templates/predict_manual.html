@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Malware Detector - Manual Prediction</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 980px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        input {
+            width: 100%;
+            padding: 6px;
+        }
+
+        .error {
+            color: #b00020;
+            margin-top: 10px;
+        }
+
+        .result {
+            margin-top: 15px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Manual Prediction</h1>
+        <p><a href="/predict-csv">CSV prediction</a></p>
+
+        <form method="POST" action="/predict-manual">
+            <div class="grid">
+                {% for k, v in demo.items() %}
+                <div>
+                    <label>{{ k }}</label>
+                    <input name="{{ k }}" value="{{ v }}">
+                </div>
+                {% endfor %}
+            </div>
+
+            <div style="margin-top: 15px;">
+                <button type="submit">Predict</button>
+            </div>
+        </form>
+
+        {% if result %}
+        <div class="result"><strong>Prediction:</strong> {{ result }}</div>
+        {% endif %}
+
+        {% if error %}
+        <div class="error"><strong>Error:</strong> {{ error }}</div>
+        {% endif %}
+    </div>
+</body>
+</html>

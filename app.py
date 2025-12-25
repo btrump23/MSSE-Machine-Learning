@@ -79,9 +79,23 @@ def predict():
     #    download_file=output_file,
     #    rows=len(df)
     #)
-    from flask import redirect, url_for
+    #from flask import redirect, url_for
 
-    return redirect(url_for("download_file", filename=output_file))
+    #return redirect(url_for("download_file", filename=output_file))
+    from flask import send_file
+    import io
+
+    # after df["prediction"] is added
+    buf = io.BytesIO()
+    df.to_csv(buf, index=False)
+    buf.seek(0)
+
+    return send_file(
+        buf,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name="predictions_output.csv"
+)
 
 
 @app.get("/downloads/<path:filename>")

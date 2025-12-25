@@ -1,159 +1,128 @@
 ﻿import os
-import io
-import zipfile
 import pickle
 import traceback
-import urllib.request
-
-from flask import Flask, request, jsonify, send_file, render_template_string
+import numpy as np
 import pandas as pd
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(BASE_DIR, ".cache")
-ZIP_PATH = os.path.join(CACHE_DIR, "model.zip")
-MODEL_DIR = os.path.join(CACHE_DIR, "model")
-MODEL_PATH = os.path.join(MODEL_DIR, "model.pkl")
-
-# HARD CODED — cannot be overridden, cannot drift
-MODEL_ZIP_URL = "https://github.com/btrump23/MSSE-Machine-Learning/releases/download/model-v1/model.zip"
-
-
-def _download_file(url: str, dest_path: str) -> None:
-    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with opener.open(req, timeout=60) as r, open(dest_path, "wb") as f:
-        f.write(r.read())
-
-
-def ensure_model_present() -> None:
-    os.makedirs(CACHE_DIR, exist_ok=True)
-
-    if os.path.exists(MODEL_PATH):
-        print("[model] already present:", MODEL_PATH)
-        return
-
-    if not os.path.exists(ZIP_PATH):
-        print("[model] downloading:", MODEL_ZIP_URL)
-        _download_file(MODEL_ZIP_URL, ZIP_PATH)
-
-    print("[model] extracting:", ZIP_PATH, "->", MODEL_DIR)
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    with zipfile.ZipFile(ZIP_PATH, "r") as z:
-        z.extractall(MODEL_DIR)
-
-    if not os.path.exists(MODEL_PATH):
-        with zipfile.ZipFile(ZIP_PATH, "r") as z:
-            raise RuntimeError(f"model.pkl missing after extraction. ZIP contained: {z.namelist()}")
-
-    print("[model] READY:", MODEL_PATH)
-
-
-def load_model():
-    ensure_model_present()
-    with open(MODEL_PATH, "rb") as f:
-        return pickle.load(f)
-
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(HERE, "model.pkl")
+
 MODEL = None
-STARTUP_ERROR = None
-
-try:
-    MODEL = load_model()
-except Exception:
-    STARTUP_ERROR = traceback.format_exc()
-    print("[startup] MODEL LOAD FAILED\n", STARTUP_ERROR)
+MODEL_ERROR = None
 
 
-@app.route("/", methods=["GET"])
-def index():
-    return render_template_string("""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>MSSE ML Predictor</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 30px; max-width: 900px; }
-    .card { border: 1px solid #ddd; padding: 18px; border-radius: 12px; }
-    .muted { color: #666; }
-    button { padding: 10px 14px; cursor: pointer; }
-    code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>MSSE ML Predictor</h2>
-    <p class="muted">Upload a CSV and download <b>predictions.csv</b>.</p>
-    <p>Status endpoint: <a href="/health">/health</a></p>
+# -----------------------------
+# Model loading (SAFE)
+# -----------------------------
+def load_model():
+    global MODEL, MODEL_ERROR
+    try:
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
 
-    <h3>Upload CSV</h3>
-    <form action="/predict_csv" method="post" enctype="multipart/form-data">
-      <input type="file" name="file" accept=".csv" required />
-      <button type="submit">Predict</button>
-    </form>
+        with open(MODEL_PATH, "rb") as f:
+            obj = pickle.load(f)
 
-    <p class="muted" style="margin-top: 14px;">
-      POST endpoint: <code>/predict_csv</code>
-    </p>
-  </div>
-</body>
-</html>
-""")
+        # CASE 1: sklearn-style model
+        if hasattr(obj, "predict"):
+            MODEL = obj
+            print("[startup] Loaded sklearn model")
+
+        # CASE 2: numpy array (THIS IS YOUR CASE)
+        elif isinstance(obj, np.ndarray):
+            MODEL = obj
+            print("[startup] Loaded numpy array model")
+
+        else:
+            raise TypeError(f"Unsupported model type: {type(obj)}")
+
+        MODEL_ERROR = None
+        return MODEL
+
+    except Exception as e:
+        MODEL = None
+        MODEL_ERROR = traceback.format_exc()
+        print("[startup] MODEL LOAD FAILED")
+        print(MODEL_ERROR)
+        return None
 
 
-@app.route("/health", methods=["GET"])
+# Load at startup
+load_model()
+
+
+# -----------------------------
+# Health check
+# -----------------------------
+@app.route("/")
 def health():
+    if MODEL is None:
+        return jsonify({
+            "status": "error",
+            "message": "Model not loaded",
+            "trace": MODEL_ERROR
+        }), 500
+
     return jsonify({
-        "ok": MODEL is not None,
-        "model_loaded": MODEL is not None,
-        "model_zip_url": MODEL_ZIP_URL,
-        "zip_path": ZIP_PATH,
-        "model_path": MODEL_PATH,
-        "startup_error": STARTUP_ERROR,
+        "status": "ok",
+        "model_type": str(type(MODEL))
     })
 
 
-@app.route("/predict_csv", methods=["POST"])
+# -----------------------------
+# CSV Prediction Endpoint
+# -----------------------------
+@app.route("/predict_csv", methods=["POST", "GET"])
 def predict_csv():
-    if MODEL is None:
-        return jsonify({"status": "error", "message": "Model not loaded.", "trace": STARTUP_ERROR}), 500
-
-    if "file" not in request.files:
-        return jsonify({"status": "error", "message": "No file uploaded (field name must be 'file')."}), 400
-
-    f = request.files["file"]
-    if not f.filename.lower().endswith(".csv"):
-        return jsonify({"status": "error", "message": "Please upload a .csv file."}), 400
-
     try:
-        df = pd.read_csv(f)
-        if df.empty:
-            return jsonify({"status": "error", "message": "CSV is empty."}), 400
+        if MODEL is None:
+            raise RuntimeError("Model not loaded")
 
-        X = df
+        if "file" not in request.files:
+            raise ValueError("No CSV file uploaded")
 
-        if hasattr(MODEL, "predict_proba"):
-            proba = MODEL.predict_proba(X)
-            for i in range(proba.shape[1]):
-                df[f"proba_{i}"] = proba[:, i]
-            if hasattr(MODEL, "predict"):
-                df["prediction"] = MODEL.predict(X)
+        file = request.files["file"]
+        df = pd.read_csv(file)
+
+        X = df.values
+
+        # --------- PREDICTION LOGIC ----------
+        if hasattr(MODEL, "predict"):
+            preds = MODEL.predict(X)
+
+        elif isinstance(MODEL, np.ndarray):
+            # Simple dot-product style prediction
+            if X.shape[1] != MODEL.shape[0]:
+                raise ValueError(
+                    f"Shape mismatch: X has {X.shape[1]} columns, "
+                    f"model expects {MODEL.shape[0]}"
+                )
+            preds = X @ MODEL
+
         else:
-            df["prediction"] = MODEL.predict(X)
+            raise TypeError("Unsupported model type at prediction time")
 
-        buf = io.BytesIO()
-        df.to_csv(buf, index=False)
-        buf.seek(0)
+        df["prediction"] = preds
 
-        return send_file(buf, mimetype="text/csv", as_attachment=True, download_name="predictions.csv")
+        return jsonify({
+            "status": "success",
+            "rows": len(df),
+            "preview": df.head(5).to_dict(orient="records")
+        })
 
-    except Exception:
-        return jsonify({"status": "error", "message": "Prediction failed.", "trace": traceback.format_exc()}), 500
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": "Prediction failed",
+            "trace": traceback.format_exc()
+        }), 500
 
 
+# -----------------------------
+# Render / Gunicorn entrypoint
+# -----------------------------
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000, debug=True)

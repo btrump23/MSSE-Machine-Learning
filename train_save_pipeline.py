@@ -156,9 +156,10 @@ def main():
     }
 
     print("🔥 ABOUT TO SAVE MODEL TO:", MODEL_PATH)
-    joblib.dump(bundle, MODEL_PATH)
-    print("🔥 MODEL SAVED")
-    print(f"\n✅ Saved packaged pipeline to: {MODEL_PATH}")
+    joblib.dump(pipeline, MODEL_PATH)
+    #joblib.dump(bundle, MODEL_PATH)
+    #print("🔥 MODEL SAVED")
+    #print(f"\n✅ Saved packaged pipeline to: {MODEL_PATH}")
 
 
 if __name__ == "__main__":

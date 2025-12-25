@@ -1,6 +1,7 @@
 ﻿import os
-import pickle
+#import pickle
 import pandas as pd
+import joblib
 from flask import Flask, request, render_template, send_from_directory, jsonify
 
 app = Flask(__name__)
@@ -19,8 +20,14 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 # ------------------------
 # Load model
 # ------------------------
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+
+model = joblib.load(MODEL_PATH)
+
+if not hasattr(model, "predict"):
+    raise TypeError(
+        f"Loaded object from {MODEL_PATH} is {type(model)} and has no predict(). "
+        "Your model.pkl is not a trained sklearn model/pipeline."
+    )
 
 # ------------------------
 # Routes
@@ -55,9 +62,17 @@ def predict():
     preds = model.predict(df)
     df["prediction"] = preds
 
+    print("✅ HIT /predict-csv")
+    print("FILES:", list(request.files.keys()))
+    print("DOWNLOADS_DIR:", DOWNLOADS_DIR)
+
+
     output_file = "predictions_output.csv"
     output_path = os.path.join(DOWNLOADS_DIR, output_file)
     df.to_csv(output_path, index=False)
+    print("Saving output to:", output_path)
+
+    print("✅ SAVED:", os.path.exists(output_path), output_path)
 
     return render_template(
         "index.html",
@@ -68,6 +83,8 @@ def predict():
 @app.get("/downloads/<path:filename>")
 def download_file(filename):
     return send_from_directory(DOWNLOADS_DIR, filename, as_attachment=True)
+
+
 
 # ------------------------
 if __name__ == "__main__":

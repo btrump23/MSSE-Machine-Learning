@@ -1,9 +1,11 @@
-import numpy as np
+﻿import numpy as np
 
 class LinearModelWrapper:
     """
-    This class name MUST exist because model.pkl was pickled as:
-      model_wrapper.LinearModelWrapper
+    Wrapper class required for unpickling model.pkl.
+
+    HARD GUARANTEE:
+    - X is ALWAYS a numpy float array before math
     """
 
     def __init__(self, weights, bias=0.0, threshold=0.5):
@@ -12,9 +14,12 @@ class LinearModelWrapper:
         self.threshold = float(threshold)
 
     def _to_2d_float_array(self, X):
+        # 🔥 FINAL SAFETY NET — force numpy float array
         Xn = np.asarray(X, dtype=float)
+
         if Xn.ndim == 1:
             Xn = Xn.reshape(1, -1)
+
         return Xn
 
     def decision_function(self, X):
@@ -39,5 +44,5 @@ class LinearModelWrapper:
         return (probs >= self.threshold).astype(int)
 
 
-# Optional aliases (harmless, helps future renames)
+# Optional alias (safe)
 MalwareModelWrapper = LinearModelWrapper

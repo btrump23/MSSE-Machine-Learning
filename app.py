@@ -58,6 +58,10 @@ DOWNLOAD_DIR = get_download_dir()
 # Helpers
 # -----------------------------
 def expected_feature_count() -> int:
+    """
+    Tries to read the expected feature count from the loaded model wrapper.
+    Your wrapper has .weights, so len(weights) is the expected feature count.
+    """
     if MODEL is None:
         return 0
     w = getattr(MODEL, "weights", None)
@@ -88,9 +92,17 @@ def coerce_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.fillna(0.0)
 
 
-def predict_array(X: np.ndarray):
+def predict_array(X):
+    """
+    FINAL HARD FIX:
+    Always force numpy float array BEFORE calling MODEL.predict,
+    so we never pass sequences / object arrays into the wrapper.
+    """
     if MODEL is None:
         raise RuntimeError(f"Model not loaded. {MODEL_ERROR or ''}".strip())
+
+    X = np.asarray(X, dtype=float)  # <-- kills "can't multiply sequence by float"
+
     return MODEL.predict(X)
 
 
@@ -222,7 +234,7 @@ def manual_page():
         expected_n=expected_feature_count(),
         raw="",
         result=None,
-        error="Model not loaded: " + MODEL_ERROR if MODEL is None else "",
+        error=("Model not loaded: " + MODEL_ERROR) if MODEL is None else "",
         tb="",
     )
     return render_template_string(PAGE_BASE, body=body)
@@ -284,7 +296,7 @@ def predict_csv_page():
         CSV_BODY,
         expected_n=expected_feature_count(),
         ok="",
-        error="Model not loaded: " + MODEL_ERROR if MODEL is None else "",
+        error=("Model not loaded: " + MODEL_ERROR) if MODEL is None else "",
         tb="",
         downloads_dir=DOWNLOAD_DIR,
         download_link="",
@@ -313,7 +325,10 @@ def predict_csv():
             raise ValueError("CSV has no columns.")
 
         features_df = coerce_numeric_df(df)
-        X = features_df.to_numpy(dtype=float)
+
+        # Force strictly numeric numpy float array
+        X = np.asarray(features_df.to_numpy(), dtype=float)
+
         preds = predict_array(X)
 
         out = df.copy()

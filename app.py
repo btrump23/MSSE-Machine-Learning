@@ -102,15 +102,23 @@ def _has_labels(df: pd.DataFrame) -> bool:
 
 def _coerce_features_numeric(X: pd.DataFrame) -> pd.DataFrame:
     """
-    Convert all feature columns to numeric to avoid:
-    "can't multiply sequence by non-int of type 'float'"
+    Force all features numeric and remove common junk columns.
     """
     X = X.copy()
+
+    # Drop common junk columns (pandas index saved to CSV, etc.)
+    X = X.loc[:, ~X.columns.astype(str).str.match(r"^Unnamed")]
+    X.columns = [str(c).strip() for c in X.columns]
+
+    # Force numeric
     for c in X.columns:
         X[c] = pd.to_numeric(X[c], errors="coerce")
-    # simplest stable approach: fill NaNs with 0
-    # (works for grading/demo; if you used a proper pipeline, it should handle missing values too)
-    return X.fillna(0)
+
+    # Replace NaNs with 0
+    X = X.fillna(0)
+
+    return X
+
 
 
 def _normalize_columns_for_inference(df: pd.DataFrame) -> pd.DataFrame:
@@ -126,33 +134,24 @@ def _predict_dataframe(X: pd.DataFrame) -> pd.Series:
         raise RuntimeError(MODEL_ERROR)
 
     X = _coerce_features_numeric(X)
-    preds = MODEL.predict(X)
+
+    # IMPORTANT: convert to numeric numpy matrix (prevents object dtype sneaking in)
+    X_mat = X.to_numpy(dtype=float)
+
+    preds = MODEL.predict(X_mat)
     return pd.Series(np.asarray(preds).ravel(), name="Prediction")
 
 
-def _safe_predict_proba_or_score(X: pd.DataFrame):
-    """
-    Returns score/prob per row for ROC AUC.
-    Prefer predict_proba(class 1), else decision_function, else None.
-    """
-    ensure_model_loaded()
-    if MODEL_ERROR:
-        return None
+X = _coerce_features_numeric(X)
+X_mat = X.to_numpy(dtype=float)
 
-    X = _coerce_features_numeric(X)
+if hasattr(MODEL, "predict_proba"):
+    proba = MODEL.predict_proba(X_mat)
+    ...
+if hasattr(MODEL, "decision_function"):
+    scores = MODEL.decision_function(X_mat)
+    ...
 
-    if hasattr(MODEL, "predict_proba"):
-        proba = MODEL.predict_proba(X)
-        proba = np.asarray(proba)
-        if proba.ndim == 2 and proba.shape[1] >= 2:
-            return proba[:, 1]
-        return proba.ravel()
-
-    if hasattr(MODEL, "decision_function"):
-        scores = MODEL.decision_function(X)
-        return np.asarray(scores).ravel()
-
-    return None
 
 
 def _make_confusion_matrix_table(cm: np.ndarray, labels=("0", "1")) -> str:

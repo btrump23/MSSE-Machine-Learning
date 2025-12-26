@@ -2,29 +2,24 @@
 
 class LinearModelWrapper:
     """
-    Wrapper class required for unpickling model.pkl.
-
-    HARD GUARANTEE:
-    - X is ALWAYS a numpy float array before math
+    Must exist for model.pkl unpickling: model_wrapper.LinearModelWrapper
     """
 
     def __init__(self, weights, bias=0.0, threshold=0.5):
+        # Force numeric
         self.weights = np.asarray(weights, dtype=float).reshape(-1)
         self.bias = float(bias)
         self.threshold = float(threshold)
 
-    def _to_2d_float_array(self, X):
-        # 🔥 FINAL SAFETY NET — force numpy float array
+    def decision_function(self, X):
+        # 🔥 HARD FORCE conversion RIGHT HERE (no chance for object arrays)
         Xn = np.asarray(X, dtype=float)
 
+        # Ensure 2D
         if Xn.ndim == 1:
             Xn = Xn.reshape(1, -1)
 
-        return Xn
-
-    def decision_function(self, X):
-        Xn = self._to_2d_float_array(X)
-
+        # Sanity check
         if Xn.shape[1] != self.weights.shape[0]:
             raise ValueError(
                 f"Feature mismatch: X has {Xn.shape[1]} columns but weights has {self.weights.shape[0]}."
@@ -44,5 +39,5 @@ class LinearModelWrapper:
         return (probs >= self.threshold).astype(int)
 
 
-# Optional alias (safe)
+# harmless alias
 MalwareModelWrapper = LinearModelWrapper

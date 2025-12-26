@@ -3,6 +3,7 @@
 class LinearModelWrapper:
     """
     Must exist for model.pkl unpickling: model_wrapper.LinearModelWrapper
+    Robust against object arrays / list-of-lists / nested sequences.
     """
 
     def __init__(self, weights, bias=0.0, threshold=0.5):
@@ -10,20 +11,37 @@ class LinearModelWrapper:
         self.bias = float(bias)
         self.threshold = float(threshold)
 
-    def decision_function(self, X):
-        # ✅ Force float array
-        Xn = np.asarray(X, dtype=float)
+    def _ensure_2d_float(self, X):
+        """
+        Convert X into a strict 2D float ndarray.
+        Handles:
+          - list of lists
+          - np.ndarray dtype=object (array of sequences)
+          - 1D arrays
+        """
+        Xn = np.asarray(X)
+
+        # If it's an object array (common cause of "sequence * float" errors)
+        if Xn.dtype == object:
+            # Typical failure mode: shape (n,) where each item is a list/array of length m
+            try:
+                Xn = np.vstack(Xn)
+            except Exception:
+                # Fallback: build row by row
+                Xn = np.array([np.asarray(row).ravel() for row in Xn], dtype=object)
+                Xn = np.vstack(Xn)
+
+        # Now force float
+        Xn = np.asarray(Xn, dtype=float)
 
         # Ensure 2D
         if Xn.ndim == 1:
             Xn = Xn.reshape(1, -1)
 
-        # 🚨 If anything slipped through as object, fail loudly with a clear message
-        if Xn.dtype == object:
-            raise TypeError(
-                "Input matrix is object dtype (contains non-numeric values or sequences). "
-                "Check CSV columns for text/IDs/extra columns."
-            )
+        return Xn
+
+    def decision_function(self, X):
+        Xn = self._ensure_2d_float(X)
 
         if Xn.shape[1] != self.weights.shape[0]:
             raise ValueError(
@@ -43,4 +61,6 @@ class LinearModelWrapper:
         probs = self.predict_proba(X)[:, 1]
         return (probs >= self.threshold).astype(int)
 
+
+# Safe alias
 MalwareModelWrapper = LinearModelWrapper

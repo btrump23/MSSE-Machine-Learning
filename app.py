@@ -1,5 +1,4 @@
 ﻿import os
-import io
 import traceback
 from datetime import datetime
 
@@ -22,10 +21,12 @@ app = Flask(__name__)
 # -----------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(HERE, "model.pkl")
+
 DOWNLOADS_DIR = os.path.join(HERE, "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
-# These must match the columns your pipeline expects (29 features)
+# Your model’s “manual input” is 27 values (as your UI shows)
+# These are the 27 numeric/primary columns (from your dataset header)
 FEATURE_COLUMNS = [
     "BaseOfCode",
     "BaseOfData",
@@ -54,21 +55,16 @@ FEATURE_COLUMNS = [
     "SizeOfOptionalHeader",
     "SizeOfUninitializedData",
     "TimeDateStamp",
-    # If your model truly expects exactly 29, add the remaining 2 here.
-    # Based on your dataset screenshots, these two are often present in processed data:
-    "SizeOfInitializedData",  # (duplicate guard removed below if needed)
-    "SizeOfUninitializedData" # (duplicate guard removed below if needed)
 ]
 
-# De-duplicate if you accidentally repeated any names
-FEATURE_COLUMNS = list(dict.fromkeys(FEATURE_COLUMNS))
+EXPECTED_FEATURES = len(FEATURE_COLUMNS)  # 27
 
-EXPECTED_FEATURES = len(FEATURE_COLUMNS)
+# The pipeline REQUIRES these columns to exist (your error confirms this)
+REQUIRED_ID_COLUMNS = ["MD5", "SHA1"]
 
-# Common non-feature columns to drop from uploaded CSVs
+# Common non-feature columns to drop (DO NOT DROP MD5/SHA1)
 DROP_COLS_IF_PRESENT = {
     "Label", "label", "target", "Target",
-    "MD5", "SHA1",
 }
 
 MODEL = None
@@ -104,47 +100,63 @@ load_model()
 # -----------------------------
 # HELPERS
 # -----------------------------
-def _ensure_dataframe(X):
+def _safe_model():
+    if MODEL is None:
+        raise RuntimeError(f"Model not loaded. {MODEL_ERROR or ''}".strip())
+    return MODEL
+
+
+def _ensure_required_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Ensure X is a pandas DataFrame with FEATURE_COLUMNS.
-    If X is ndarray/list, build DF with those columns.
+    Ensure MD5 and SHA1 exist (pipeline demands them).
+    Put blank strings if missing.
     """
-    if isinstance(X, pd.DataFrame):
-        # Ensure correct columns exist and order matches
-        df = X.copy()
-        for c in FEATURE_COLUMNS:
-            if c not in df.columns:
-                df[c] = 0
-        df = df[FEATURE_COLUMNS]
-        return df
+    out = df.copy()
+    for c in REQUIRED_ID_COLUMNS:
+        if c not in out.columns:
+            out[c] = ""
+        else:
+            # force string type (safe for text/vectorizers)
+            out[c] = out[c].astype(str)
+    return out
 
-    # Otherwise treat as array-like
-    arr = np.asarray(X)
 
-    # Force 2D
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
+def _coerce_numeric_columns_only(df: pd.DataFrame, numeric_cols) -> pd.DataFrame:
+    """
+    Only coerce our numeric FEATURE_COLUMNS.
+    Leave MD5/SHA1 as strings.
+    """
+    out = df.copy()
+    for c in numeric_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    out[numeric_cols] = out[numeric_cols].fillna(0)
+    return out
 
-    # Pad/truncate to EXPECTED_FEATURES
+
+def _build_df_from_manual_values(values):
+    """
+    Manual form provides a list of floats.
+    We build a DF with FEATURE_COLUMNS, pad/truncate to 27,
+    THEN add MD5/SHA1 as blank strings.
+    """
+    arr = np.asarray(values, dtype=float).reshape(1, -1)
+
     if arr.shape[1] < EXPECTED_FEATURES:
-        pad = np.zeros((arr.shape[0], EXPECTED_FEATURES - arr.shape[1]), dtype=float)
-        arr = np.hstack([arr.astype(float, copy=False), pad])
+        pad = np.zeros((1, EXPECTED_FEATURES - arr.shape[1]), dtype=float)
+        arr = np.hstack([arr, pad])
     elif arr.shape[1] > EXPECTED_FEATURES:
         arr = arr[:, :EXPECTED_FEATURES]
 
-    return pd.DataFrame(arr, columns=FEATURE_COLUMNS)
+    df = pd.DataFrame(arr, columns=FEATURE_COLUMNS)
 
+    # Coerce numerics (already float, but safe)
+    df = _coerce_numeric_columns_only(df, FEATURE_COLUMNS)
 
-def _coerce_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert everything to numeric where possible.
-    Non-numeric -> NaN -> fill with 0.
-    """
-    out = df.copy()
-    for c in out.columns:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-    out = out.fillna(0)
-    return out
+    # Add required ID columns for pipeline
+    df = _ensure_required_columns(df)
+
+    return df
 
 
 def _predict_proba_or_label(model, X_df: pd.DataFrame):
@@ -152,30 +164,20 @@ def _predict_proba_or_label(model, X_df: pd.DataFrame):
     Returns (labels, probs)
     probs = probability of class 1 if available, else None
     """
-    # sklearn pipeline expects DF with named cols if trained that way
     if hasattr(model, "predict_proba"):
         probs_all = model.predict_proba(X_df)
-        # binary: take class-1 probability if exists
+        probs = None
         if probs_all is not None and len(probs_all.shape) == 2 and probs_all.shape[1] >= 2:
             probs = probs_all[:, 1]
-        else:
-            probs = None
         labels = model.predict(X_df)
         return labels, probs
 
-    # fallback: only labels
     labels = model.predict(X_df)
     return labels, None
 
 
-def _safe_model():
-    if MODEL is None:
-        raise RuntimeError(f"Model not loaded. {MODEL_ERROR or ''}".strip())
-    return MODEL
-
-
 # -----------------------------
-# UI TEMPLATES
+# UI
 # -----------------------------
 BASE_HTML = """
 <!doctype html>
@@ -219,7 +221,7 @@ BASE_HTML = """
 # -----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    body = """
+    body = f"""
     <div class="card">
       <h2>Malware Detector</h2>
       <ul>
@@ -227,10 +229,10 @@ def home():
         <li><a href="/predict-csv">CSV Prediction</a></li>
         <li><a href="/health">Health</a></li>
       </ul>
-      <p class="muted">Model expects exactly {{n}} features.</p>
+      <p class="muted">Manual expects exactly {EXPECTED_FEATURES} numeric values. The pipeline also requires MD5 and SHA1 columns (auto-added).</p>
     </div>
     """
-    return render_template_string(BASE_HTML, body=render_template_string(body, n=EXPECTED_FEATURES))
+    return render_template_string(BASE_HTML, body=body)
 
 
 @app.route("/health", methods=["GET"])
@@ -239,14 +241,14 @@ def health():
         "status": "ok" if MODEL is not None else "error",
         "model_loaded": MODEL is not None,
         "model_error": MODEL_ERROR,
-        "expected_features": EXPECTED_FEATURES,
+        "expected_manual_features": EXPECTED_FEATURES,
+        "required_id_columns": REQUIRED_ID_COLUMNS,
         "downloads_dir": DOWNLOADS_DIR,
     })
 
 
 @app.route("/predict", methods=["GET", "POST"])
 def manual_predict():
-    error = None
     result_html = ""
 
     if request.method == "POST":
@@ -257,15 +259,10 @@ def manual_predict():
             if not raw:
                 raise ValueError("Please paste a comma-separated row of numeric values.")
 
-            # parse user input -> float list
             parts = [p.strip() for p in raw.split(",") if p.strip() != ""]
-            vals = []
-            for p in parts:
-                vals.append(float(p))
+            vals = [float(p) for p in parts]
 
-            # IMPORTANT FIX: build DataFrame with named columns
-            X_df = _ensure_dataframe(vals)
-            X_df = _coerce_numeric_df(X_df)
+            X_df = _build_df_from_manual_values(vals)
 
             labels, probs = _predict_proba_or_label(model, X_df)
 
@@ -286,7 +283,10 @@ def manual_predict():
     body = f"""
     <div class="card">
       <h2>Manual prediction</h2>
-      <p class="muted">Paste a single row of numeric feature values (comma-separated). Model expects {EXPECTED_FEATURES} values. If fewer, we pad zeros; if more, we truncate.</p>
+      <p class="muted">
+        Paste a single row of numeric feature values (comma-separated). Model expects {EXPECTED_FEATURES} values.
+        If fewer, we pad zeros; if more, we truncate. We also auto-add MD5 and SHA1 as blank strings.
+      </p>
       <form method="POST">
         <input type="text" name="row" placeholder="e.g. 0,0,0,...">
         <button class="primary" type="submit">Predict</button>
@@ -311,23 +311,25 @@ def predict_csv():
             if not f or f.filename.strip() == "":
                 raise ValueError("No file selected.")
 
-            # Read CSV
             df = pd.read_csv(f)
 
-            # Drop label-ish columns if present
+            # Drop label column if present (keep MD5/SHA1!)
             for c in list(df.columns):
                 if c in DROP_COLS_IF_PRESENT:
                     df = df.drop(columns=[c])
 
-            # Coerce to numeric (non-numeric -> 0)
-            df = _coerce_numeric_df(df)
-
-            # Ensure expected columns exist in correct order
+            # Ensure numeric feature columns exist and are in correct order
             for c in FEATURE_COLUMNS:
                 if c not in df.columns:
                     df[c] = 0
 
-            df = df[FEATURE_COLUMNS]
+            df = df[FEATURE_COLUMNS + [c for c in REQUIRED_ID_COLUMNS if c in df.columns] + [c for c in REQUIRED_ID_COLUMNS if c not in df.columns]]
+
+            # Coerce only numeric feature columns
+            df = _coerce_numeric_columns_only(df, FEATURE_COLUMNS)
+
+            # Ensure MD5/SHA1 exist (blank if missing)
+            df = _ensure_required_columns(df)
 
             labels, probs = _predict_proba_or_label(model, df)
 
@@ -357,7 +359,10 @@ def predict_csv():
     body = f"""
     <div class="card">
       <h2>Upload CSV</h2>
-      <p class="muted">Expected features: {EXPECTED_FEATURES}. We drop common label columns (Label/target) and coerce non-numeric values to 0. Then we reorder/pad columns to exactly {EXPECTED_FEATURES} features.</p>
+      <p class="muted">
+        Expected numeric features: {EXPECTED_FEATURES}. We keep MD5 and SHA1 (pipeline requires them).
+        Label/target columns are dropped if present. Non-numeric in numeric columns becomes 0.
+      </p>
       <form method="POST" enctype="multipart/form-data">
         <input type="file" name="file" accept=".csv">
         <button class="primary" type="submit">Run Predictions</button>
@@ -374,5 +379,4 @@ def download_file(filename):
 
 
 if __name__ == "__main__":
-    # Local dev
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=True)
